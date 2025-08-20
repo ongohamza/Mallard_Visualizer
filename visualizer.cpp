@@ -31,9 +31,7 @@ int selectColorByAmplitude(float amplitude_percent, const std::vector<int>& colo
 
 
 // Visualization functions
-void drawOscilloscope(int width, int height,
-                      const int16_t* leftData, const int16_t* rightData,
-                      const std::vector<int>& colorPairIDs, int edgePairID) {
+void drawOscilloscope(int width, int height,  const int16_t* leftData, const int16_t* rightData, const std::vector<int>& colorPairIDs, int edgePairID) {
     int samples_per_col = BUFFER_FRAMES / width;
     if (samples_per_col < 1) samples_per_col = 1;
 
@@ -112,12 +110,10 @@ void drawOscilloscope(int width, int height,
     }
                       }
 
-                      void drawVuMeter(int width, int height,
-                                       const int16_t* leftData, const int16_t* rightData,
-                                       const std::vector<int>& colorPairIDs) {
-                          // Calculate peak amplitude for left and right
+     void drawVuMeter(int width, int height, const int16_t* leftData, const int16_t* rightData, const std::vector<int>& colorPairIDs) {
+             // Calculate peak amplitude for left and right
                           int16_t left_peak = 0;
-                          int16_t right_peak = 0;
+                        int16_t right_peak = 0;
                           for (int i = 0; i < BUFFER_FRAMES; i++) {
                               int16_t left_abs = std::abs(leftData[i]);
                               int16_t right_abs = std::abs(rightData[i]);
@@ -238,35 +234,35 @@ void drawOscilloscope(int width, int height,
                                                float sum_sq = 0;
                                                int count = 0;
                                                for (int i = start_idx; i < end_idx; i++) {
-                                                   float sample = rightData[i] / 32768.0f;
-                                                   sum_sq += sample * sample;
-                                                   count++;
-                                               }
-                                               float rms = sqrtf(sum_sq / count);
+                                    float sample = rightData[i] / 32768.0f;
+                                      sum_sq += sample * sample;
+                                    count++;
+                                  }
+                     float rms = sqrtf(sum_sq / count);
 
-                                               if (rms > rightPeakHeights[bar]) {
-                                                   rightPeakHeights[bar] = rms;
-                                               } else {
-                                                   rightPeakHeights[bar] -= decay_rate;
-                                                   if (rightPeakHeights[bar] < 0) {
-                                                       rightPeakHeights[bar] = 0;
-                                                   }
-                                               }
+                               if (rms > rightPeakHeights[bar]) {
+                             rightPeakHeights[bar] = rms;
+                                    } else {
+                                             rightPeakHeights[bar] -= decay_rate;
+                                           if (rightPeakHeights[bar] < 0) {
+                                      rightPeakHeights[bar] = 0;
+                            }
+               }
 
-                                               int bar_height = static_cast<int>(rightPeakHeights[bar] * channelHeight * 1.5f);
-                                               bar_height = std::min(bar_height, channelHeight);
-                                               int x = bar * (bar_width + spacing);
+                int bar_height = static_cast<int>(rightPeakHeights[bar] * channelHeight * 1.5f);
+                 bar_height = std::min(bar_height, channelHeight);
+               int x = bar * (bar_width + spacing);
 
                                                // Choose color based on the current peak height
-                                               int pairID = selectColorByAmplitude(rightPeakHeights[bar], colorPairIDs);
+             int pairID = selectColorByAmplitude(rightPeakHeights[bar], colorPairIDs);
 
-                                               attron(COLOR_PAIR(pairID));
-                                               for (int col = 0; col < bar_width; col++) {
-                                                   if (x + col >= width) break;
-                                                   for (int y = 0; y < bar_height; y++) {
-                                                       mvaddch(y + rightChannelOffset, x + col, ' ');
-                                                   }
-                                               }
-                                               attroff(COLOR_PAIR(pairID));
-                                           }
-                                                         }
+                attron(COLOR_PAIR(pairID));
+              for (int col = 0; col < bar_width; col++) {
+              if (x + col >= width) break;
+                  for (int y = 0; y < bar_height; y++) {
+        mvaddch(y + rightChannelOffset, x + col, ' ');
+    }
+     }
+         attroff(COLOR_PAIR(pairID));
+  }
+}
