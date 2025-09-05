@@ -1,36 +1,42 @@
+
 # Compiler and flags
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -Wextra -O2
-LDLIBS = -lncurses -lpulse-simple -lpulse
-
-# Project name
-TARGET = oscilloscope
-
-# Source files
+CXXFLAGS = -std=c++17 -Wall -O2
 SRCS = oscilloscope.cpp visualizer.cpp config_parser.cpp
 OBJS = $(SRCS:.cpp=.o)
+TARGET = visualizer
 
-# Default target
+# --- Audio Backend Selection ---
+# User can override this from the command line, e.g., 'make AUDIO_BACKEND=pulse'
+# Defaults to pipewire if not set.
+AUDIO_BACKEND ?= pipewire
+
+# Check the value of AUDIO_BACKEND and set flags/libraries accordingly
+ifeq ($(AUDIO_BACKEND),pipewire)
+    # Use PipeWire
+	@echo "Building with PipeWire backend..."
+    CXXFLAGS += -DUSE_PIPEWIRE
+    LIBS = -lncurses -lpipewire-0.3
+else ifeq ($(AUDIO_BACKEND),pulse)
+    # Use PulseAudio
+	@echo "Building with PulseAudio backend..."
+    # No specific flag needed, it's the default in the C++ code
+    LIBS = -lncurses -lpulse-simple
+else
+    # Error for invalid backend
+    $(error "Invalid AUDIO_BACKEND specified. Use 'pipewire' or 'pulse'.")
+endif
+# --- End Selection ---
+
+.PHONY: all clean
+
 all: $(TARGET)
 
-# Link the executable
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDLIBS)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
 
-# Compile source files
-%.o: %.cpp
+%.o: %.cpp config_parser.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Clean build files
 clean:
-	rm -f $(TARGET) $(OBJS)
-
-# Install to system (optional)
-install: $(TARGET)
-	cp $(TARGET) /usr/local/bin/
-
-# Uninstall from system (optional)
-uninstall:
-	rm -f /usr/local/bin/$(TARGET)
-
-.PHONY: all clean install uninstall
+	rm -f $(OBJS) $(TARGET)
