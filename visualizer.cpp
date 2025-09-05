@@ -174,9 +174,7 @@ void drawOscilloscope(int width, int height,  const int16_t* leftData, const int
                               attroff(A_REVERSE | COLOR_PAIR(rightPairID));
                           }
                                        }
-void drawBarGraph(int width, int height,
-                                            const int16_t* leftData, const int16_t* rightData,
-                                            const std::vector<int>& colorPairIDs) {
+void drawBarGraph(int width, int height,const int16_t* leftData, const int16_t* rightData, const std::vector<int>& colorPairIDs) {
                                            const int num_bars = 32;
                                            static std::vector<float> leftPeakHeights(num_bars, 0.0f);
                                            static std::vector<float> rightPeakHeights(num_bars, 0.0f);
