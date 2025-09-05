@@ -1,7 +1,4 @@
 #include <ncurses.h>
-#include <pulse/simple.h>
-#include <pulse/error.h>
-#include <pulse/channelmap.h>
 #include <cmath>
 #include <cstdlib>
 #include <csignal>
