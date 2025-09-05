@@ -30,7 +30,7 @@ extern void drawVuMeter(int width, int height,
                                         const std::vector<int>& colorPairIDs);
 extern void drawBarGraph(int width, int height,
                                                           const int16_t* leftData, const int16_t* rightData,
-                                                          const std::vector<int>& colorPairIDs);
+                                                          const std::vector<int>& colorPairIDs, float decay_rate);
 
 const int SAMPLE_RATE = 44100;
 const int TOTAL_SAMPLES = BUFFER_FRAMES * 2; // Stereo: 2 samples per frame
