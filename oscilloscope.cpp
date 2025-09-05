@@ -1,4 +1,3 @@
-
 #include <ncurses.h>
 #include <cmath>
 #include <cstdlib>
