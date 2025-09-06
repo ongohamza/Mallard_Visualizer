@@ -209,7 +209,7 @@ int initColors(const std::vector<std::pair<int, int>>& configPairs, std::pair<in
 }
 
 int main() {
-    ConfigParser parser("/home/hamza/.config/oscilloscope.conf");
+    ConfigParser parser("~/.config/oscilloscope.conf");
     std::vector<std::pair<int, int>> colorConfig;
     std::pair<int, int> edgeColorConfig;
 
