@@ -9,6 +9,7 @@
 #include <atomic>
 #include <mutex>
 #include <algorithm>
+#include <getopt.h>
 #include "config_parser.h"
 
 // --- Conditional Includes for Audio Backend ---
@@ -208,7 +209,8 @@ int initColors(const std::vector<std::pair<int, int>>& configPairs, std::pair<in
     return edgeID;
 }
 
-int main() {
+void init()
+{
     ConfigParser parser("~/.config/oscilloscope.conf");
     std::vector<std::pair<int, int>> colorConfig;
     std::pair<int, int> edgeColorConfig;
@@ -296,5 +298,10 @@ int main() {
     if (audioThread.joinable()) audioThread.join();
     
     endwin();
+}
+
+int main(int argc, char *argv[]) 
+{
+    init();
     return 0;
 }
