@@ -13,18 +13,15 @@ AUDIO_BACKEND ?= pipewire
 
 # Check the value of AUDIO_BACKEND and set flags/libraries accordingly
 ifeq ($(AUDIO_BACKEND),pipewire)
-    # Use PipeWire
-	@echo "Building with PipeWire backend..."
-    CXXFLAGS += -DUSE_PIPEWIRE
-    LIBS = -lncurses -lpipewire-0.3
+# Use PipeWire
+	CXXFLAGS += -DUSE_PIPEWIRE
+	LIBS = -lncurses -lpipewire-0.3
 else ifeq ($(AUDIO_BACKEND),pulse)
-    # Use PulseAudio
-	@echo "Building with PulseAudio backend..."
-    # No specific flag needed, it's the default in the C++ code
-    LIBS = -lncurses -lpulse-simple
+# Use PulseAudio
+	LIBS = -lncurses -lpulse-simple
 else
-    # Error for invalid backend
-    $(error "Invalid AUDIO_BACKEND specified. Use 'pipewire' or 'pulse'.")
+# Error for invalid backend
+	$(error "Invalid AUDIO_BACKEND specified. Use 'pipewire' or 'pulse'.")
 endif
 # --- End Selection ---
 
@@ -33,6 +30,7 @@ endif
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
+	@echo "Building with $(AUDIO_BACKEND) backend..."
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
 
 %.o: %.cpp config_parser.h
