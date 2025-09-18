@@ -1,4 +1,3 @@
-
 # Compiler and flags
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -O2
@@ -7,20 +6,17 @@ OBJS = $(SRCS:.cpp=.o)
 TARGET = visualizer
 
 # --- Audio Backend Selection ---
-# User can override this from the command line, e.g., 'make AUDIO_BACKEND=pulse'
-# Defaults to pipewire if not set.
 AUDIO_BACKEND ?= pipewire
 
-# Check the value of AUDIO_BACKEND and set flags/libraries accordingly
 ifeq ($(AUDIO_BACKEND),pipewire)
-# Use PipeWire
+# Use PipeWire with pkg-config for portability
+	CXXFLAGS += $(shell pkg-config --cflags libpipewire-0.3)
 	CXXFLAGS += -DUSE_PIPEWIRE
-	LIBS = -lncurses -lpipewire-0.3
+	LIBS = -lncurses $(shell pkg-config --libs libpipewire-0.3)
 else ifeq ($(AUDIO_BACKEND),pulse)
 # Use PulseAudio
-	LIBS = -lncurses -lpulse-simple
+	LIBS = -lncurses -lpulse -lpulse-simple
 else
-# Error for invalid backend
 	$(error "Invalid AUDIO_BACKEND specified. Use 'pipewire' or 'pulse'.")
 endif
 # --- End Selection ---
