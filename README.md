@@ -1,6 +1,6 @@
 # Mallard_Visualizer
 This is a command line visualizer that is better than cava in every way. It has 3 options for visualizations, unlike cava's measily 1 option for bar graph.
-
+I fixed this recent bug where I found that there were small artifacts in the bar graph mode, I fixed this by replacing the ' ' with ACS_BLOCK, as well as the main erase() command will handle clearing the screen perfectly every frame. The visualizer will then only need to draw the colored bars on top of this clean slate. I'll soon do the same thing to the vu meter, although that hasn't had any rendering issues, the fix results in much smaller, cleaner code.
 
 I wrote this under gpl v3 I have the liscense below
 
