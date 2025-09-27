@@ -1,9 +1,12 @@
 # Mallard_Visualizer
 This is a command line visualizer that is better than cava in every way. It has 3 options for visualizations, unlike cava's measily 1 option for bar graph.
-I fixed this recent bug where I found that there were small artifacts in the bar graph mode, I fixed this by replacing the ' ' with ACS_BLOCK, as well as the main erase() command will handle clearing the screen perfectly every frame. The visualizer will then only need to draw the colored bars on top of this clean slate. I'll soon do the same thing to the vu meter, although that hasn't had any rendering issues, the fix results in much smaller, cleaner code.
+Version 1.0.2 changelog: I fixed this recent bug where I found that there were small artifacts in the bar graph mode, I fixed this by replacing the ' ' with ACS_BLOCK, as well as the main erase() command will handle clearing the screen perfectly every frame. The visualizer will then only need to draw the colored bars on top of this clean slate. I'll soon do the same thing to the vu meter, although that hasn't had any rendering issues, the fix results in much smaller, cleaner code.
 
+Version 1.0.3 changelog: Added interpolation for the oscilloscope mode because it was not rendering correctly after extending the window past 256w. I added a smooth decay factor for the vu_meter so it's smoother. I added an option where you can press arrow_up or down to change it from displaying peak or rms audio
+Things I still need to fix: visualizations hang when compiled in pulse audio mode, it doesn't cause a huge issue but I need to find a way to get the pulse audio to display the audio resetting.
 I wrote this under gpl v3 I have the liscense below
 
+Ambitious goals: Have a coreaudio implementation so it works on mac as well
 
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007
