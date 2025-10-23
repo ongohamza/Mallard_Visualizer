@@ -1,5 +1,6 @@
 # Mallard_Visualizer
 This is a command line visualizer that is better than cava in every way. It has 3 options for visualizations, unlike cava's measily 1 option for bar graph.
+
 Version 1.0.4 changelog: added an ellipse feature, uses the exact same algorithm as the one in ncmpcpp. I added an option to add custom visualizers by plotting different shape points in the config file.
 
 Version 1.0.3 changelog: Added interpolation for the oscilloscope mode because it was not rendering correctly after extending the window past 256w. I added a smooth decay factor for the vu_meter so it's smoother. I added an option where you can press arrow_up or down to change it from displaying peak or rms audio
