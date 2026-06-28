@@ -444,6 +444,10 @@ int main() {
                  toggleVuMeterMode(true);
             } else if (ch == KEY_DOWN && currentModeIdx == VU_METER) {
                 toggleVuMeterMode(false);
+            } else if (ch == KEY_UP && currentModeIdx == BAR_GRAPH) {
+                toggleBarGraphMode(true);
+            } else if (ch == KEY_DOWN && currentModeIdx == BAR_GRAPH) {
+                toggleBarGraphMode(false);
             }
         }
 
@@ -466,7 +470,7 @@ int main() {
             switch(static_cast<BuiltInMode>(currentModeIdx)) {
                 case OSCILLOSCOPE: drawOscilloscope(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs); break;
                 case VU_METER: drawVuMeter(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
-                case BAR_GRAPH: drawBarGraph(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
+                case BAR_GRAPH: drawBarGraph(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active, global_sample_rate.load(std::memory_order_relaxed)); break;
                 case MIRROR_WAVE: drawMirrorWave(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
                 case GALAXY: drawGalaxy(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
                 case ELLIPSE: drawEllipse(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs); break;
@@ -505,12 +509,17 @@ int main() {
         move(height - 1, 0);
         clrtoeol();
         attron(COLOR_PAIR(edgePairID));
-        const char* vuModeInfo = (currentModeIdx == VU_METER) ? getVuMeterModeName() : "N/A";
-        mvprintw(height - 1, 0, " Rate: %-5s | %-12s | %-12s | VU: %-3s | FPS: %.0f | SPACE: Cycle | Q: Quit",
+        const char* detailModeInfo = "N/A";
+        if (currentModeIdx == VU_METER) {
+            detailModeInfo = getVuMeterModeName();
+        } else if (currentModeIdx == BAR_GRAPH) {
+            detailModeInfo = getBarGraphModeName();
+        }
+        mvprintw(height - 1, 0, " Rate: %-5s | %-12s | %-12s | Sub: %-11s | FPS: %.0f | SPACE: Cycle | UP/DN: Sub | Q: Quit",
                  rate_str.c_str(),
                  audio_stream_active ? "Connected" : "Disconnected",
                  modeNames[currentModeIdx].c_str(), 
-                 vuModeInfo, 
+                 detailModeInfo, 
                  last_fps);
         attroff(COLOR_PAIR(edgePairID));
 

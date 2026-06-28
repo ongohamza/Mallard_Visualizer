@@ -16,6 +16,13 @@ enum VuMeterMode {
 };
 VuMeterMode vuMeterMode = VU_RMS; // Default to RMS
 
+enum BarGraphMode {
+    BAR_LINEAR,
+    BAR_CENTER_BASS,
+    BAR_MODE_COUNT
+};
+BarGraphMode barGraphMode = BAR_LINEAR;
+
 /**
  * @brief Selects a color pair ID from the gradient list based on amplitude.
  * @param amplitude_percent A normalized amplitude value (0.0f to 1.0f).
@@ -108,6 +115,107 @@ void computeMirrorSpectrum(const int16_t* leftData, const int16_t* rightData, st
         }
         const float magnitude = std::sqrt(real * real + imag * imag) / static_cast<float>(sampleCount);
         magnitudes[static_cast<size_t>(bin)] = magnitude;
+    }
+}
+
+void computeChannelSpectrum(const int16_t* data, std::vector<float>& magnitudes) {
+    constexpr int sampleCount = BUFFER_FRAMES;
+    constexpr int binCount = BUFFER_FRAMES / 2;
+    constexpr float PI = 3.1415926535f;
+
+    if (magnitudes.size() != static_cast<size_t>(binCount)) {
+        magnitudes.assign(static_cast<size_t>(binCount), 0.0f);
+    } else {
+        std::fill(magnitudes.begin(), magnitudes.end(), 0.0f);
+    }
+
+    static std::vector<float> windowed(static_cast<size_t>(sampleCount), 0.0f);
+    static std::vector<float> cosTable;
+    static std::vector<float> sinTable;
+    const size_t tableSize = static_cast<size_t>(binCount) * static_cast<size_t>(sampleCount);
+    if (cosTable.size() != tableSize || sinTable.size() != tableSize) {
+        cosTable.resize(tableSize);
+        sinTable.resize(tableSize);
+        for (int bin = 0; bin < binCount; ++bin) {
+            for (int n = 0; n < sampleCount; ++n) {
+                const size_t idx = static_cast<size_t>(bin) * static_cast<size_t>(sampleCount) + static_cast<size_t>(n);
+                const float angle = 2.0f * PI * static_cast<float>(bin) * static_cast<float>(n) / static_cast<float>(sampleCount);
+                cosTable[idx] = std::cos(angle);
+                sinTable[idx] = std::sin(angle);
+            }
+        }
+    }
+
+    for (int n = 0; n < sampleCount; ++n) {
+        const float sample = static_cast<float>(data[n]) / 32767.0f;
+        const float window = 0.5f * (1.0f - std::cos(2.0f * PI * static_cast<float>(n) / static_cast<float>(sampleCount - 1)));
+        windowed[static_cast<size_t>(n)] = sample * window;
+    }
+
+    for (int bin = 0; bin < binCount; ++bin) {
+        float real = 0.0f;
+        float imag = 0.0f;
+        for (int n = 0; n < sampleCount; ++n) {
+            const size_t idx = static_cast<size_t>(bin) * static_cast<size_t>(sampleCount) + static_cast<size_t>(n);
+            const float sample = windowed[static_cast<size_t>(n)];
+            real += sample * cosTable[idx];
+            imag -= sample * sinTable[idx];
+        }
+        const float magnitude = std::sqrt(real * real + imag * imag) / static_cast<float>(sampleCount);
+        magnitudes[static_cast<size_t>(bin)] = magnitude;
+    }
+}
+
+void computeLogFrequencyBands(const std::vector<float>& spectrum, int bandCount, uint32_t sampleRate, std::vector<float>& bands) {
+    if (bandCount <= 0) {
+        bands.clear();
+        return;
+    }
+
+    bands.assign(static_cast<size_t>(bandCount), 0.0f);
+    if (spectrum.empty() || sampleRate == 0) {
+        return;
+    }
+
+    constexpr float centerBassLimitHz = 100.0f;
+    const float nyquistHz = std::max(centerBassLimitHz + 1.0f, static_cast<float>(sampleRate) * 0.5f);
+    const float hzPerBin = static_cast<float>(sampleRate) / static_cast<float>(BUFFER_FRAMES);
+    std::vector<float> edges(static_cast<size_t>(bandCount) + 1, 0.0f);
+    edges[0] = 0.0f;
+
+    if (bandCount == 1) {
+        edges[1] = nyquistHz;
+    } else {
+        edges[1] = centerBassLimitHz;
+        const float logRange = std::log(nyquistHz / centerBassLimitHz);
+        for (int edge = 2; edge <= bandCount; ++edge) {
+            const float t = static_cast<float>(edge - 1) / static_cast<float>(bandCount - 1);
+            edges[static_cast<size_t>(edge)] = centerBassLimitHz * std::exp(logRange * t);
+        }
+    }
+
+    for (int band = 0; band < bandCount; ++band) {
+        const float bandLowHz = edges[static_cast<size_t>(band)];
+        const float bandHighHz = edges[static_cast<size_t>(band + 1)];
+        float weightedMagnitude = 0.0f;
+        float totalWeight = 0.0f;
+
+        for (size_t bin = 1; bin < spectrum.size(); ++bin) {
+            const float binCenterHz = static_cast<float>(bin) * hzPerBin;
+            const float binLowHz = std::max(0.0f, binCenterHz - (hzPerBin * 0.5f));
+            const float binHighHz = binCenterHz + (hzPerBin * 0.5f);
+            const float overlapHz = std::min(bandHighHz, binHighHz) - std::max(bandLowHz, binLowHz);
+
+            if (overlapHz > 0.0f) {
+                const float weight = overlapHz / hzPerBin;
+                weightedMagnitude += spectrum[bin] * weight;
+                totalWeight += weight;
+            }
+        }
+
+        if (totalWeight > 0.0f) {
+            bands[static_cast<size_t>(band)] = weightedMagnitude / totalWeight;
+        }
     }
 }
 
@@ -534,14 +642,23 @@ void drawVuMeter(WINDOW *win, int width, int height, const int16_t* leftData, co
  * the RMS volume of each bin as a vertical bar. Left channel is on top
  * (bars go down), Right channel is on bottom (bars go up).
  */
-void drawBarGraph(WINDOW *win, int width, int height, const int16_t* leftData, const int16_t* rightData, const std::vector<int>& colorPairIDs, bool audio_active) {
+void drawBarGraph(WINDOW *win, int width, int height, const int16_t* leftData, const int16_t* rightData, const std::vector<int>& colorPairIDs, bool audio_active, uint32_t sampleRate) {
     const int num_bars = 32; // How many frequency bins
     const int spacing = 1;   // Space between bars
-    // 'peakHeights' holds the decaying peak for each bar
+    const int centeredBandCount = num_bars / 2;
     static std::vector<float> leftPeakHeights(num_bars, 0.0f), rightPeakHeights(num_bars, 0.0f);
-    // 'colorDecay' is for smooth color fading for each bar
     static std::vector<float> leftColorDecay(num_bars, 0.0f), rightColorDecay(num_bars, 0.0f);
+    static std::vector<float> leftCenteredPeakHeights(num_bars, 0.0f), rightCenteredPeakHeights(num_bars, 0.0f);
+    static std::vector<float> leftCenteredColorDecay(num_bars, 0.0f), rightCenteredColorDecay(num_bars, 0.0f);
+    static std::vector<float> leftSpectrum, rightSpectrum;
+    static std::vector<float> leftBands, rightBands;
+    static float leftSpectrumPeak = 0.001f;
+    static float rightSpectrumPeak = 0.001f;
     const float color_decay_rate = 0.025f;
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
 
     // Reset peaks if audio disconnects
     if (!audio_active) {
@@ -549,6 +666,12 @@ void drawBarGraph(WINDOW *win, int width, int height, const int16_t* leftData, c
         std::fill(rightPeakHeights.begin(), rightPeakHeights.end(), 0.0f);
         std::fill(leftColorDecay.begin(), leftColorDecay.end(), 0.0f);
         std::fill(rightColorDecay.begin(), rightColorDecay.end(), 0.0f);
+        std::fill(leftCenteredPeakHeights.begin(), leftCenteredPeakHeights.end(), 0.0f);
+        std::fill(rightCenteredPeakHeights.begin(), rightCenteredPeakHeights.end(), 0.0f);
+        std::fill(leftCenteredColorDecay.begin(), leftCenteredColorDecay.end(), 0.0f);
+        std::fill(rightCenteredColorDecay.begin(), rightCenteredColorDecay.end(), 0.0f);
+        leftSpectrumPeak = 0.001f;
+        rightSpectrumPeak = 0.001f;
     }
 
     // Calculate bar width, distributing remainder pixels
@@ -557,7 +680,26 @@ void drawBarGraph(WINDOW *win, int width, int height, const int16_t* leftData, c
     int remainder = total_bar_width % num_bars;
     int channelHeight = height / 2;
 
-    // Lambda function to process and draw one channel (L or R)
+    if (channelHeight <= 0) {
+        return;
+    }
+
+    auto draw_bar = [&](int x, int bar_width, int bar_height, int pairID, int y_offset, bool is_top_channel) {
+        if (bar_height <= 0 || bar_width <= 0 || x >= width) {
+            return;
+        }
+
+        bar_width = std::min(bar_width, width - x);
+        wattron(win, COLOR_PAIR(pairID));
+        for (int col = 0; col < bar_width; col++) {
+            for (int y = 0; y < bar_height; y++) {
+                int y_pos = is_top_channel ? y_offset + channelHeight - 1 - y : y_offset + y;
+                mvwaddch(win, y_pos, x + col, ACS_BLOCK);
+            }
+        }
+        wattroff(win, COLOR_PAIR(pairID));
+    };
+
     auto process_channel = [&](const int16_t* data, std::vector<float>& peakHeights, std::vector<float>& colorDecay, int y_offset, bool is_top_channel) {
         int current_x = 0;
         for (int bar = 0; bar < num_bars; bar++) {
@@ -585,26 +727,67 @@ void drawBarGraph(WINDOW *win, int width, int height, const int16_t* leftData, c
             int bar_height = std::min(channelHeight, static_cast<int>(peakHeights[bar] * channelHeight * 1.5f));
             int bar_width = base_bar_width + (bar < remainder ? 1 : 0); // Add remainder
 
-            // Draw the bar
-            if (bar_height > 0 && bar_width > 0 && current_x < width) {
-                bar_width = std::min(bar_width, width - current_x); // Don't draw off-screen
-                wattron(win, COLOR_PAIR(pairID));
-                for (int col = 0; col < bar_width; col++) {
-                    for (int y = 0; y < bar_height; y++) {
-                        // Top channel draws from top-down, bottom channel draws from bottom-up
-                        int y_pos = is_top_channel ? y_offset + channelHeight - 1 - y : y_offset + y;
-                        mvwaddch(win, y_pos, current_x + col, ACS_BLOCK);
-                    }
-                }
-                wattroff(win, COLOR_PAIR(pairID));
-            }
+            draw_bar(current_x, bar_width, bar_height, pairID, y_offset, is_top_channel);
             current_x += bar_width + (bar < num_bars - 1 ? spacing : 0);
         }
     };
 
-    // Draw both channels
-    process_channel(leftData, leftPeakHeights, leftColorDecay, 0, true); // Top (Left)
-    process_channel(rightData, rightPeakHeights, rightColorDecay, channelHeight, false); // Bottom (Right)
+    auto process_centered_channel = [&](const int16_t* data,
+                                        std::vector<float>& peakHeights,
+                                        std::vector<float>& colorDecay,
+                                        std::vector<float>& spectrum,
+                                        std::vector<float>& bands,
+                                        float& spectrumPeak,
+                                        int y_offset,
+                                        bool is_top_channel) {
+        if (audio_active) {
+            computeChannelSpectrum(data, spectrum);
+            computeLogFrequencyBands(spectrum, centeredBandCount, sampleRate, bands);
+            const float framePeak = bands.empty() ? 0.0f : *std::max_element(bands.begin(), bands.end());
+            spectrumPeak = std::max(framePeak, spectrumPeak * 0.985f);
+            spectrumPeak = std::max(spectrumPeak, 0.001f);
+        } else {
+            spectrumPeak = std::max(0.001f, spectrumPeak * 0.98f);
+        }
+
+        int current_x = 0;
+        for (int bar = 0; bar < num_bars; bar++) {
+            const int band = (bar < centeredBandCount)
+                ? centeredBandCount - 1 - bar
+                : bar - centeredBandCount;
+            float currentAmplitude = 0.0f;
+
+            if (audio_active && band >= 0 && band < static_cast<int>(bands.size())) {
+                const float normalized = std::clamp(bands[static_cast<size_t>(band)] / spectrumPeak, 0.0f, 1.0f);
+                const float compressed = std::pow(normalized, 0.45f);
+                const float bandPosition = (centeredBandCount > 1)
+                    ? static_cast<float>(band) / static_cast<float>(centeredBandCount - 1)
+                    : 0.0f;
+                currentAmplitude = std::clamp(compressed * (1.0f + bandPosition * 0.25f), 0.0f, 1.0f);
+            }
+
+            const float rise_factor = 0.6f;
+            if (currentAmplitude > peakHeights[bar]) peakHeights[bar] += (currentAmplitude - peakHeights[bar]) * rise_factor;
+            else peakHeights[bar] = std::max(0.0f, peakHeights[bar] - decay__factor);
+
+            int pairID = getFadedColorPairID(peakHeights[bar], colorDecay[bar], colorPairIDs, color_decay_rate);
+            int bar_height = std::min(channelHeight, static_cast<int>(peakHeights[bar] * channelHeight * 1.6f));
+            int bar_width = base_bar_width + (bar < remainder ? 1 : 0);
+
+            draw_bar(current_x, bar_width, bar_height, pairID, y_offset, is_top_channel);
+            current_x += bar_width + (bar < num_bars - 1 ? spacing : 0);
+        }
+    };
+
+    if (barGraphMode == BAR_CENTER_BASS) {
+        process_centered_channel(leftData, leftCenteredPeakHeights, leftCenteredColorDecay,
+                                 leftSpectrum, leftBands, leftSpectrumPeak, 0, true);
+        process_centered_channel(rightData, rightCenteredPeakHeights, rightCenteredColorDecay,
+                                 rightSpectrum, rightBands, rightSpectrumPeak, channelHeight, false);
+    } else {
+        process_channel(leftData, leftPeakHeights, leftColorDecay, 0, true);
+        process_channel(rightData, rightPeakHeights, rightColorDecay, channelHeight, false);
+    }
 }
 
 /**
@@ -864,4 +1047,24 @@ void toggleVuMeterMode(bool upArrow) {
  */
 const char* getVuMeterModeName() {
     return (vuMeterMode == VU_PEAK) ? "PEAK" : "RMS";
+}
+
+/**
+ * @brief Cycles the Bar Graph between the original layout and center-bass mode.
+ */
+void toggleBarGraphMode(bool upArrow) {
+    int nextMode = static_cast<int>(barGraphMode) + (upArrow ? 1 : -1);
+    if (nextMode < 0) {
+        nextMode = BAR_MODE_COUNT - 1;
+    } else if (nextMode >= BAR_MODE_COUNT) {
+        nextMode = 0;
+    }
+    barGraphMode = static_cast<BarGraphMode>(nextMode);
+}
+
+/**
+ * @brief Gets the name of the current Bar Graph mode for the status bar.
+ */
+const char* getBarGraphModeName() {
+    return (barGraphMode == BAR_CENTER_BASS) ? "CENTER-BASS" : "LINEAR";
 }

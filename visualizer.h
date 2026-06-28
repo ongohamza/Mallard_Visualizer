@@ -16,7 +16,8 @@ void drawVuMeter(WINDOW *win, int width, int height,
 
 void drawBarGraph(WINDOW *win, int width, int height,
                   const int16_t* leftData, const int16_t* rightData,
-                  const std::vector<int>& colorPairIDs, bool audio_active);
+                  const std::vector<int>& colorPairIDs, bool audio_active,
+                  uint32_t sampleRate);
 
 void drawMirrorWave(WINDOW *win, int width, int height,
                     const int16_t* leftData, const int16_t* rightData,
@@ -43,5 +44,7 @@ void drawCustomShape(WINDOW *win, int width, int height,
 
 void toggleVuMeterMode(bool upArrow);
 const char* getVuMeterModeName();
+void toggleBarGraphMode(bool upArrow);
+const char* getBarGraphModeName();
 
 #endif // VISUALIZER_H
