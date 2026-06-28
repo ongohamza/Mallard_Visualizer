@@ -21,7 +21,12 @@ else
 endif
 # --- End Selection ---
 
-.PHONY: all clean
+# --- Installation Directories ---
+PREFIX ?= /usr/local
+BINDIR = $(PREFIX)/bin
+
+
+.PHONY: all clean install uninstall
 
 all: $(TARGET)
 
@@ -34,3 +39,13 @@ $(TARGET): $(OBJS)
 
 clean:
 	rm -f $(OBJS) $(TARGET)
+
+# --- Installation Targets ---
+
+install: all
+	@echo "Installing $(TARGET) to $(BINDIR)..."
+	install -D -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
+
+uninstall:
+	@echo "Uninstalling $(TARGET) from $(BINDIR)..."
+	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)

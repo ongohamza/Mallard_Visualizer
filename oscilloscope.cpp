@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <csignal>
 #include <vector>
 #include <string>
@@ -13,29 +14,24 @@
 #include <algorithm>
 #include <condition_variable>
 #include "config_parser.h"
+#include "visualizer.h"
 
-// Visualization modes
-enum VisualizationMode {
+// Built-in modes
+enum BuiltInMode {
     OSCILLOSCOPE,
     VU_METER,
     BAR_GRAPH,
-    NUM_MODES  // Keep last for cycling
+    MIRROR_WAVE,
+    GALAXY,
+    ELLIPSE,
+    ECLIPSE,
+    NUM_BUILT_IN_MODES
 };
 
-// Forward declarations for drawing functions from visualizer.cpp
-extern void drawOscilloscope(int width, int height,
-                             const int16_t* leftData, const int16_t* rightData,
-                             const std::vector<int>& colorPairIDs, int edgePairID);
-extern void drawVuMeter(int width, int height,
-                        const int16_t* leftData, const int16_t* rightData,
-                        const std::vector<int>& colorPairIDs);
-extern void drawBarGraph(int width, int height,
-                         const int16_t* leftData, const int16_t* rightData,
-                         const std::vector<int>& colorPairIDs, bool audio_active);
-
 // --- Global State ---
-const int SAMPLE_RATE = 44100;
-const int TOTAL_SAMPLES = BUFFER_FRAMES * 2; // Stereo: 2 samples per frame
+const int DEFAULT_SAMPLE_RATE = 44100;
+std::atomic<uint32_t> global_sample_rate(DEFAULT_SAMPLE_RATE);
+const int TOTAL_SAMPLES = BUFFER_FRAMES * 2;
 std::atomic<bool> running(true);
 std::atomic<bool> audio_stream_active(false);
 std::vector<int> colorPairIDs;
@@ -45,70 +41,60 @@ int edgePairID = 0;
 class RingBuffer {
 public:
     RingBuffer() : m_head(0), m_tail(0) {}
-
     void write(const int16_t* data) {
         size_t head = m_head.load(std::memory_order_relaxed);
         size_t next_head = (head + 1) % BUFFER_COUNT;
         if (next_head == m_tail.load(std::memory_order_acquire)) {
-            // Consumer is lagging, but we push new data anyway, overwriting the oldest.
-        }
+            // Buffer full, overwrite oldest
+        } 
         std::copy(data, data + TOTAL_SAMPLES, m_buffer[head]);
         m_head.store(next_head, std::memory_order_release);
     }
-
     bool read(int16_t* destLeft, int16_t* destRight) {
         const size_t tail = m_tail.load(std::memory_order_relaxed);
         const size_t head = m_head.load(std::memory_order_acquire);
-
-        if (tail == head) return false; // No new data
-
+        if (tail == head) return false;
         const int16_t* source_buffer = m_buffer[tail];
         for (int i = 0; i < BUFFER_FRAMES; i++) {
             destLeft[i] = source_buffer[i * 2];
             destRight[i] = source_buffer[i * 2 + 1];
         }
-
         m_tail.store((tail + 1) % BUFFER_COUNT, std::memory_order_release);
         return true;
     }
-
 private:
-    static const int BUFFER_COUNT = 4;
+    static const int BUFFER_COUNT = 8; // Increased buffer count for stability
     int16_t m_buffer[BUFFER_COUNT][TOTAL_SAMPLES] = {{0}};
     std::atomic<size_t> m_head;
     std::atomic<size_t> m_tail;
 };
-
 RingBuffer audioBuffer;
 
-// --- Signal Handling & Audio Backend ---
 #ifdef USE_PIPEWIRE
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/raw-utils.h>
+#include <spa/param/param.h>
+#include <spa/pod/filter.h>
 struct pw_main_loop *global_pw_loop = nullptr;
 std::mutex loop_mutex;
 #else // PulseAudio
-#include <pulse/simple.h>
+#include <pulse/pulseaudio.h>
 #include <pulse/error.h>
-#include <pulse/channelmap.h>
+pa_mainloop* global_pa_loop = nullptr;
+std::mutex loop_mutex;
 #endif
 
 void signal_handler(int) {
     running = false;
-    #ifdef USE_PIPEWIRE
-    std::lock_guard<std::mutex> lock(loop_mutex);
-    if (global_pw_loop) {
-        pw_main_loop_quit(global_pw_loop);
-    }
-    #endif
 }
 
 #ifdef USE_PIPEWIRE
-// PipeWire audio capture implementation
+// --- PipeWire Audio Capture Implementation ---
 struct PipeWireData {
     struct pw_main_loop *loop;
     struct pw_stream *stream;
 };
+
 static void on_process(void *userdata) {
     struct pw_buffer *b;
     PipeWireData* data = static_cast<PipeWireData*>(userdata);
@@ -116,86 +102,262 @@ static void on_process(void *userdata) {
         struct spa_buffer *buf = b->buffer;
         if (buf->datas[0].data) {
             size_t n_bytes = buf->datas[0].chunk->size;
-            // A more robust check for available data size might be needed here
-            // for different PipeWire buffer sizes, but this should work for typical settings.
             if (n_bytes >= sizeof(int16_t) * TOTAL_SAMPLES) {
                 audioBuffer.write(static_cast<int16_t*>(buf->datas[0].data));
+                if(!audio_stream_active) audio_stream_active = true;
             }
         }
         pw_stream_queue_buffer(data->stream, b);
     }
 }
-static void on_state_changed(void *, enum pw_stream_state, enum pw_stream_state new_state, const char *) {
+
+static void on_state_changed(void *, enum pw_stream_state, enum pw_stream_state new_state, const char *error) {
     switch (new_state) {
-        case PW_STREAM_STATE_STREAMING: audio_stream_active = true; break;
-        default: audio_stream_active = false; break;
+        case PW_STREAM_STATE_STREAMING: 
+            audio_stream_active = true; 
+            break;
+        case PW_STREAM_STATE_ERROR:
+            audio_stream_active = false;
+            std::cerr << "PipeWire Stream Error: " << (error ? error : "Unknown") << std::endl;
+            break;
+        default: 
+            audio_stream_active = false; 
+            break;
     }
 }
-static const struct pw_stream_events stream_events = { .version = PW_VERSION_STREAM_EVENTS, .state_changed = on_state_changed, .process = on_process };
+
+static void on_param_changed(void *, uint32_t id, const struct spa_pod *param) {
+    if (id != SPA_PARAM_Format || !param) return;
+    struct spa_audio_info_raw info;
+    if (spa_format_audio_raw_parse(param, &info) >= 0) {
+        if (info.rate > 0) {
+            global_sample_rate.store(info.rate, std::memory_order_relaxed);
+        }
+    }
+}
+
+static const struct pw_stream_events stream_events = [] {
+    struct pw_stream_events events = {};
+    events.version = PW_VERSION_STREAM_EVENTS;
+    events.state_changed = on_state_changed;
+    events.param_changed = on_param_changed;
+    events.process = on_process;
+    return events;
+}();
+
 void audioCaptureThread() {
     pw_init(nullptr, nullptr);
     while (running) {
         PipeWireData data = {};
         data.loop = pw_main_loop_new(nullptr);
-        { std::lock_guard<std::mutex> lock(loop_mutex); global_pw_loop = data.loop; }
-        data.stream = pw_stream_new_simple(pw_main_loop_get_loop(data.loop), "Ncurses Visualizer", pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Music", nullptr), &stream_events, &data);
         
+        { std::lock_guard<std::mutex> lock(loop_mutex); global_pw_loop = data.loop; }
+
+        data.stream = pw_stream_new_simple(
+            pw_main_loop_get_loop(data.loop), "Ncurses Visualizer",
+            pw_properties_new(
+                PW_KEY_MEDIA_TYPE, "Audio", 
+                PW_KEY_MEDIA_CATEGORY, "Capture",
+                PW_KEY_MEDIA_ROLE, "Music", 
+                PW_KEY_NODE_NAME, "visualizer_capture",
+                PW_KEY_STREAM_CAPTURE_SINK, "true", // Crucial for system audio
+                nullptr),
+            &stream_events, &data);
+
         uint8_t buffer[1024];
         struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
-        
         struct spa_audio_info_raw info = {};
         info.format = SPA_AUDIO_FORMAT_S16;
         info.channels = 2;
-        info.rate = SAMPLE_RATE;
+        info.rate = DEFAULT_SAMPLE_RATE;
 
         const struct spa_pod *params[1] = { spa_format_audio_raw_build(&b, SPA_PARAM_EnumFormat, &info) };
-        pw_stream_connect(data.stream, PW_DIRECTION_INPUT, PW_ID_ANY, static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS), params, 1);
-        pw_main_loop_run(data.loop);
+        
+        int ret = pw_stream_connect(data.stream, PW_DIRECTION_INPUT, PW_ID_ANY,
+            static_cast<pw_stream_flags>(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS | PW_STREAM_FLAG_RT_PROCESS),
+            params, 1);
+
+        if (ret < 0) {
+            std::cerr << "Failed to connect PipeWire stream: " << strerror(ret) << std::endl;
+        } else {
+            pw_main_loop_run(data.loop);
+        }
+
         { std::lock_guard<std::mutex> lock(loop_mutex); global_pw_loop = nullptr; }
-        pw_stream_destroy(data.stream);
-        pw_main_loop_destroy(data.loop);
+        
+        if(data.stream) pw_stream_destroy(data.stream);
+        if(data.loop) pw_main_loop_destroy(data.loop);
+        
         audio_stream_active = false;
         if (running) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     pw_deinit();
 }
-#else // PulseAudio backend
+
+#else // --- PulseAudio (Explicit Monitor) ---
+
+struct PulseData {
+    pa_mainloop* mainloop;
+    pa_context* context;
+    pa_stream* stream;
+    std::string monitor_name;
+};
+
+static void stream_read_callback(pa_stream* s, size_t length, void*) {
+    const void* data;
+    if (pa_stream_peek(s, &data, &length) < 0) return;
+    if (data && length > 0) {
+        size_t to_write = std::min(length, sizeof(int16_t) * TOTAL_SAMPLES);
+        if (to_write >= sizeof(int16_t) * TOTAL_SAMPLES) {
+             audioBuffer.write(static_cast<const int16_t*>(data));
+             if(!audio_stream_active) audio_stream_active = true;
+        }
+    }
+    if (length > 0) pa_stream_drop(s);
+}
+
+static void stream_state_callback(pa_stream* s, void* userdata) {
+    PulseData* data = static_cast<PulseData*>(userdata);
+    switch (pa_stream_get_state(s)) {
+        case PA_STREAM_READY:
+            audio_stream_active = true;
+            global_sample_rate.store(DEFAULT_SAMPLE_RATE, std::memory_order_relaxed);
+            break;
+        case PA_STREAM_FAILED:
+            std::cerr << "PulseAudio Stream Failed: " << pa_strerror(pa_context_errno(data->context)) << std::endl;
+            audio_stream_active = false;
+            pa_mainloop_quit(data->mainloop, 1);
+            break;
+        case PA_STREAM_TERMINATED:
+            audio_stream_active = false;
+            pa_mainloop_quit(data->mainloop, 0);
+            break;
+        default: break;
+    }
+}
+
+static void server_info_callback(pa_context* c, const pa_server_info* i, void* userdata) {
+    PulseData* data = static_cast<PulseData*>(userdata);
+    
+    // Fallback logic: Try monitor of default sink, otherwise use default source (mic)
+    const char* target_device = nullptr;
+    if (i && i->default_sink_name) {
+        data->monitor_name = std::string(i->default_sink_name) + ".monitor";
+        target_device = data->monitor_name.c_str();
+    } else {
+        std::cerr << "No default sink found. Attempting default source (mic)..." << std::endl;
+        target_device = nullptr; // Records from default source
+    }
+
+    pa_sample_spec ss = { .format = PA_SAMPLE_S16LE, .rate = DEFAULT_SAMPLE_RATE, .channels = 2 };
+    // Adjust buffer attributes for stability
+    pa_buffer_attr buffer_attr;
+    buffer_attr.maxlength = (uint32_t) -1;
+    buffer_attr.tlength = (uint32_t) -1;
+    buffer_attr.prebuf = (uint32_t) -1;
+    buffer_attr.minreq = (uint32_t) -1;
+    buffer_attr.fragsize = (uint32_t)(TOTAL_SAMPLES * sizeof(int16_t)); // Important for visualizer latency
+
+    data->stream = pa_stream_new(data->context, "VisualizerCapture", &ss, nullptr);
+    if (!data->stream) {
+        std::cerr << "Failed to create stream: " << pa_strerror(pa_context_errno(c)) << std::endl;
+        pa_mainloop_quit(data->mainloop, 1);
+        return;
+    }
+
+    pa_stream_set_state_callback(data->stream, stream_state_callback, userdata);
+    pa_stream_set_read_callback(data->stream, stream_read_callback, userdata);
+    
+    int ret = pa_stream_connect_record(data->stream, target_device, &buffer_attr, 
+        static_cast<pa_stream_flags_t>(PA_STREAM_ADJUST_LATENCY | PA_STREAM_AUTO_TIMING_UPDATE));
+        
+    if (ret < 0) {
+        std::cerr << "Failed to connect record: " << pa_strerror(pa_context_errno(c)) << std::endl;
+        pa_mainloop_quit(data->mainloop, 1);
+    }
+}
+
+static void context_state_callback(pa_context* c, void* userdata) {
+    PulseData* data = static_cast<PulseData*>(userdata);
+    switch (pa_context_get_state(c)) {
+        case PA_CONTEXT_READY: {
+            pa_operation* op = pa_context_get_server_info(c, server_info_callback, userdata);
+            if (op) pa_operation_unref(op);
+            break;
+        }
+        case PA_CONTEXT_FAILED:
+        case PA_CONTEXT_TERMINATED:
+            std::cerr << "PulseAudio Context Failed/Terminated" << std::endl;
+            pa_mainloop_quit(data->mainloop, 1);
+            break;
+        default: break;
+    }
+}
+
 void audioCaptureThread() {
-    pa_sample_spec ss = { .format = PA_SAMPLE_S16LE, .rate = SAMPLE_RATE, .channels = 2 };
-    pa_buffer_attr buffer_attr = { .maxlength = (uint32_t)-1, .fragsize = (uint32_t)(TOTAL_SAMPLES * sizeof(int16_t)) };
-    int error;
     while (running) {
-        pa_simple *pa = pa_simple_new(nullptr, "Ncurses Visualizer", PA_STREAM_RECORD, nullptr, "record", &ss, nullptr, &buffer_attr, &error);
-        if (!pa) {
-            if (running) { std::this_thread::sleep_for(std::chrono::seconds(1)); }
+        PulseData data = {};
+        data.mainloop = pa_mainloop_new();
+        if (!data.mainloop) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
-        audio_stream_active = true;
-        while (running) {
-            int16_t buffer[TOTAL_SAMPLES];
-            if (pa_simple_read(pa, buffer, sizeof(buffer), &error) < 0) break;
-            audioBuffer.write(buffer);
+
+        { std::lock_guard<std::mutex> lock(loop_mutex); global_pa_loop = data.mainloop; }
+
+        pa_mainloop_api* api = pa_mainloop_get_api(data.mainloop);
+        data.context = pa_context_new(api, "Ncurses Visualizer");
+        
+        pa_context_set_state_callback(data.context, context_state_callback, &data);
+        
+        if (pa_context_connect(data.context, nullptr, PA_CONTEXT_NOAUTOSPAWN, nullptr) < 0) {
+            std::cerr << "PulseAudio connect failed." << std::endl;
+            pa_context_unref(data.context);
+            pa_mainloop_free(data.mainloop);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
         }
+
+        pa_mainloop_run(data.mainloop, nullptr);
+        
+        // Cleanup sequence
+        { std::lock_guard<std::mutex> lock(loop_mutex); global_pa_loop = nullptr; }
+        
+        if (data.stream) {
+            pa_stream_disconnect(data.stream);
+            pa_stream_unref(data.stream);
+        }
+        if (data.context) {
+            pa_context_disconnect(data.context);
+            pa_context_unref(data.context);
+        }
+        pa_mainloop_free(data.mainloop);
+        
         audio_stream_active = false;
-        pa_simple_free(pa);
+        if (running) std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 #endif
 
-// --- ncurses UI and Main Application Logic ---
-int initColors(const std::vector<std::pair<int, int>>& configPairs, std::pair<int, int> edgeColor) {
+int initColors(const std::vector<std::pair<int, int>>& configPairs) {
+    if (!has_colors()) return 0;
     start_color();
     use_default_colors();
     colorPairIDs.clear();
-    for (int i = 0; i < static_cast<int>(configPairs.size()); ++i) {
+    for (size_t i = 0; i < configPairs.size(); ++i) {
         init_pair(i + 1, configPairs[i].first, configPairs[i].second);
         colorPairIDs.push_back(i + 1);
     }
-    int edgeID = colorPairIDs.size() + 1;
-    if (edgeColor.first != -2) {
-        init_pair(edgeID, edgeColor.first, edgeColor.second);
+    // Fallback if config is empty to ensure visibility
+    if (colorPairIDs.empty()) {
+        init_pair(1, COLOR_WHITE, COLOR_BLACK);
+        colorPairIDs.push_back(1);
     }
-    return edgeID;
+
+    // Reserve one pair for UI text so status/labels stay white on transparent background.
+    int uiTextPairID = static_cast<int>(colorPairIDs.size()) + 1;
+    init_pair(uiTextPairID, COLOR_WHITE, -1);
+    return uiTextPairID;
 }
 
 int main() {
@@ -206,31 +368,44 @@ int main() {
     }
     std::string full_path = std::string(home_dir_cstr) + "/.config/oscilloscope.conf";
     ConfigParser parser(full_path);
+    parser.parse();
     
-    std::vector<std::pair<int, int>> colorConfig;
-    std::pair<int, int> edgeColorConfig;
-    if (!parser.parse()) {
-        fprintf(stderr, "Config Error: %s. Using default.\n", parser.getError().c_str());
-        colorConfig = {{COLOR_GREEN, -1}};
-        edgeColorConfig = {-2, -2};
-    } else {
-        colorConfig = parser.getColorPairs();
-        edgeColorConfig = parser.getEdgeColorPair();
-    }
-
+    auto colorConfig = parser.getColorPairs();
+    auto customVisualizers = parser.getCustomVisualizers();
+    
+    // Start Audio Thread First
     std::thread audioThread(audioCaptureThread);
-    initscr();
-    cbreak();
-    noecho();
-    curs_set(0);
-    nodelay(stdscr, TRUE);
-    keypad(stdscr, TRUE);
-    if (has_colors()) { // <-- Corrected typo here
-        edgePairID = initColors(colorConfig, edgeColorConfig);
+
+    // Initialize ncurses using an explicit SCREEN so we can free it with delscreen().
+    int height = 0;
+    int width = 0;
+    SCREEN* ui_screen = newterm(nullptr, stdout, stdin);
+    WINDOW* vis_win = nullptr;
+    if (ui_screen == nullptr) {
+        running = false;
+        std::cerr << "Failed to initialize ncurses screen." << std::endl;
+    } else {
+        set_term(ui_screen);
+        cbreak();
+        noecho();
+        curs_set(0);
+        nodelay(stdscr, TRUE);
+        keypad(stdscr, TRUE);
+
+        if (has_colors()) {
+            edgePairID = initColors(colorConfig);
+        }
+
+        bkgd(' ' | COLOR_PAIR(0));
+        refresh();
+
+        getmaxyx(stdscr, height, width);
+        vis_win = newwin(height - 1, width, 0, 0);
+        if (vis_win == nullptr) {
+            running = false;
+            std::cerr << "Failed to create ncurses visualizer window." << std::endl;
+        }
     }
-    
-    // Set the default background for the entire window to ensure clean redraws.
-    bkgd(' ' | COLOR_PAIR(0));
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -240,85 +415,135 @@ int main() {
     auto next_frame_time = steady_clock::now();
     int16_t leftAudio[BUFFER_FRAMES] = {0};
     int16_t rightAudio[BUFFER_FRAMES] = {0};
-    VisualizationMode currentMode = OSCILLOSCOPE;
-    const char* modeNames[] = {"Oscilloscope", "VU Meter", "Bar Graph"};
+    
+    std::vector<std::string> modeNames = {
+        "Oscilloscope", "VU Meter", "Bar Graph", "Mirror Wave", "Galaxy", "Ellipse", "Eclipse"
+    };
+    for(const auto& viz : customVisualizers) {
+        modeNames.push_back(viz.name);
+    }
+    const int total_modes = modeNames.size();
+    int currentModeIdx = 0;
 
+    // --- Main Rendering Loop ---
     while (running) {
         next_frame_time += frame_duration;
-
         int ch = getch();
         if (ch != ERR) {
-            if (ch == 'q' || ch == 'Q') {
+            if (ch == KEY_RESIZE) {
+                getmaxyx(stdscr, height, width);
+                wresize(vis_win, height - 1, width);
+                bkgd(' ' | COLOR_PAIR(0));
+                touchwin(stdscr);
+                refresh();
+            } else if (ch == 'q' || ch == 'Q') {
                 running = false;
-                #ifdef USE_PIPEWIRE
-                std::lock_guard<std::mutex> lock(loop_mutex);
-                if (global_pw_loop) pw_main_loop_quit(global_pw_loop);
-                #endif
+            } else if (ch == ' ') {
+                currentModeIdx = (currentModeIdx + 1) % total_modes;
+            } else if (ch == KEY_UP && currentModeIdx == VU_METER) {
+                 toggleVuMeterMode(true);
+            } else if (ch == KEY_DOWN && currentModeIdx == VU_METER) {
+                toggleVuMeterMode(false);
             }
-            else if (ch == ' ') currentMode = static_cast<VisualizationMode>((static_cast<int>(currentMode) + 1) % NUM_MODES);
         }
 
-        int width, height;
-        getmaxyx(stdscr, height, width);
-        erase();
+        if (!running) break;
 
-        if (!audio_stream_active) {
+        werase(vis_win);
+
+        bool has_new_data = audioBuffer.read(leftAudio, rightAudio);
+
+        if (!audio_stream_active || !has_new_data) {
+            // Decay / Silence
             std::fill(leftAudio, leftAudio + BUFFER_FRAMES, 0);
             std::fill(rightAudio, rightAudio + BUFFER_FRAMES, 0);
+        }
+
+        int vis_height, vis_width;
+        getmaxyx(vis_win, vis_height, vis_width);
+
+        if (currentModeIdx < NUM_BUILT_IN_MODES) {
+            switch(static_cast<BuiltInMode>(currentModeIdx)) {
+                case OSCILLOSCOPE: drawOscilloscope(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs); break;
+                case VU_METER: drawVuMeter(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
+                case BAR_GRAPH: drawBarGraph(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
+                case MIRROR_WAVE: drawMirrorWave(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
+                case GALAXY: drawGalaxy(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
+                case ELLIPSE: drawEllipse(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs); break;
+                case ECLIPSE: drawEclipse(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs); break;
+                default: break;
+            }
         } else {
-            audioBuffer.read(leftAudio, rightAudio);
+            int custom_idx = currentModeIdx - NUM_BUILT_IN_MODES;
+            if (custom_idx < static_cast<int>(customVisualizers.size())) {
+                drawCustomShape(vis_win, vis_width, vis_height, leftAudio, rightAudio, colorPairIDs, customVisualizers[custom_idx]);
+            }
         }
 
-        int draw_height = height - 1;
-        switch (currentMode) {
-            case OSCILLOSCOPE: drawOscilloscope(width, draw_height, leftAudio, rightAudio, colorPairIDs, edgePairID); break;
-            case VU_METER: drawVuMeter(width, draw_height, leftAudio, rightAudio, colorPairIDs); break;
-            case BAR_GRAPH: drawBarGraph(width, draw_height, leftAudio, rightAudio, colorPairIDs, audio_stream_active); break;
-            default: break;
-        }
-        
-        attron(A_BOLD);
-        mvprintw(0, 2, "L");
-        mvprintw(draw_height / 2, 2, "R");
-        attroff(A_BOLD);
-
-        if (!audio_stream_active) {
-            const char* msg1 = "Audio disconnected.";
-            const char* msg2 = "Attempting to reconnect...";
-            mvprintw(height / 2 - 1, (width - strlen(msg1)) / 2, "%s", msg1);
-            mvprintw(height / 2, (width - strlen(msg2)) / 2, "%s", msg2);
+        if (currentModeIdx == OSCILLOSCOPE || currentModeIdx == VU_METER || currentModeIdx == BAR_GRAPH) {
+            wattron(vis_win, A_BOLD | COLOR_PAIR(edgePairID));
+            mvwprintw(vis_win, 0, 2, "L");
+            mvwprintw(vis_win, vis_height / 2, 2, "R");
+            wattroff(vis_win, A_BOLD | COLOR_PAIR(edgePairID));
         }
 
+        wrefresh(vis_win);
+
+        // UI Status Bar
         static int frame_count = 0;
-        static auto last_time = steady_clock::now();
+        static auto last_time = std::chrono::steady_clock::now();
         static float last_fps = 0.0f;
         frame_count++;
-        auto now = steady_clock::now();
-        if (duration_cast<seconds>(now - last_time).count() >= 1) {
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - last_time).count() >= 1) {
             last_fps = frame_count;
             frame_count = 0;
             last_time = now;
         }
 
-        attron(A_REVERSE);
-        mvprintw(height - 1, 0, "%*s", width, ""); // Clear the line
-        mvprintw(height - 1, 0, " Status: %-12s | Mode: %-12s | FPS: %.0f | Press SPACE to change | Q to quit ",
-                 audio_stream_active ? "Connected" : "Disconnected", modeNames[currentMode], last_fps);
-        attroff(A_REVERSE);
+        std::string rate_str = std::to_string(global_sample_rate.load(std::memory_order_relaxed));
+        move(height - 1, 0);
+        clrtoeol();
+        attron(COLOR_PAIR(edgePairID));
+        const char* vuModeInfo = (currentModeIdx == VU_METER) ? getVuMeterModeName() : "N/A";
+        mvprintw(height - 1, 0, " Rate: %-5s | %-12s | %-12s | VU: %-3s | FPS: %.0f | SPACE: Cycle | Q: Quit",
+                 rate_str.c_str(),
+                 audio_stream_active ? "Connected" : "Disconnected",
+                 modeNames[currentModeIdx].c_str(), 
+                 vuModeInfo, 
+                 last_fps);
+        attroff(COLOR_PAIR(edgePairID));
 
         refresh();
 
-        auto sleep_duration = next_frame_time - steady_clock::now();
+        auto sleep_duration = next_frame_time - std::chrono::steady_clock::now();
         if (sleep_duration.count() > 0) {
             std::this_thread::sleep_for(sleep_duration);
         }
     }
 
-    #ifdef USE_PIPEWIRE
-    if (audioThread.joinable()) audioThread.join();
-    #else
-    if (audioThread.joinable()) audioThread.detach();
-    #endif
-    endwin();
+    // --- CLEANUP SEQUENCE ---
+    // 1. Force Audio Loop to Wake/Quit
+    {
+        std::lock_guard<std::mutex> lock(loop_mutex);
+        #ifdef USE_PIPEWIRE
+        if (global_pw_loop) pw_main_loop_quit(global_pw_loop);
+        #else
+        if (global_pa_loop) pa_mainloop_quit(global_pa_loop, 0);
+        #endif
+    }
+
+    // 2. Join Thread (Safe because loop was signaled)
+    if (audioThread.joinable()) {
+        audioThread.join();
+    }
+
+    // 3. Destroy Ncurses
+    if (vis_win) delwin(vis_win);
+    if (ui_screen) {
+        endwin();
+        delscreen(ui_screen);
+    }
+
     return 0;
 }
